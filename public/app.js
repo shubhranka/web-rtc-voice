@@ -18,6 +18,22 @@ const KDF_ITERATIONS = 100000;
 // App-layer E2EE requires the Insertable Streams transform API.
 const E2EE_SUPPORTED = typeof window.RTCRtpScriptTransform === 'function';
 
+// --- End-to-end encryption toggle -----------------------------------------
+// Default ON. Override per session with ?e2ee=off in the URL (handy for
+// isolating audio issues without a redeploy). BOTH peers must use the same
+// setting — the creator's share link carries it to the joiner automatically.
+const E2EE_DEFAULT = true;
+
+function e2eeRequested() {
+  const q = new URLSearchParams(location.search).get('e2ee');
+  if (q === 'off' || q === 'false' || q === '0') return false;
+  if (q === 'on' || q === 'true' || q === '1') return true;
+  return E2EE_DEFAULT;
+}
+
+// Effective setting for this session.
+const E2EE_ON = e2eeRequested() && E2EE_SUPPORTED;
+
 // ---------------------------------------------------------------------------
 // DOM
 // ---------------------------------------------------------------------------
@@ -172,44 +188,45 @@ async function makeOffer() {
   sendWs({ type: 'signal', payload: { description: pc.localDescription } });
 }
 
-// Build the peer connection, grab the mic, and wire up E2EE.
+// Build the peer connection, grab the mic, and (when enabled) wire up E2EE.
 async function setupMediaAndPc() {
-  keyBytes = await deriveKeyBytes(secret);
-  e2eeWorker = new Worker('e2ee-worker.js');
-  e2eeWorker.onmessage = (e) => {
-    const data = e.data || {};
-    if (data.type === 'log') {
-      console.log('[e2ee]', data.msg);
-    } else if (data.type === 'decrypt-error') {
-      console.warn('[e2ee] decryption failed — the passphrase does not match the other peer.');
-      showBanner('Incoming audio could not be decrypted — the passphrase may not match.', 'error');
-    }
-  };
-  e2eeWorker.onerror = (e) => {
-    console.error('[e2ee] worker error:', e.message);
-    showBanner('Encryption worker failed to start: ' + e.message, 'error');
-  };
+  if (E2EE_ON) {
+    keyBytes = await deriveKeyBytes(secret);
+    e2eeWorker = new Worker('e2ee-worker.js');
+    e2eeWorker.onmessage = (e) => {
+      const data = e.data || {};
+      if (data.type === 'log') {
+        console.log('[e2ee]', data.msg);
+      } else if (data.type === 'decrypt-error') {
+        console.warn('[e2ee] decryption failed — the passphrase does not match the other peer.');
+        showBanner('Incoming audio could not be decrypted — the passphrase may not match.', 'error');
+      }
+    };
+    e2eeWorker.onerror = (e) => {
+      console.error('[e2ee] worker error:', e.message);
+      showBanner('Encryption worker failed to start: ' + e.message, 'error');
+    };
+  } else {
+    console.warn('[e2ee] DISABLED for this session (testing mode). Audio is NOT end-to-end encrypted.');
+  }
 
   localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
 
   pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
-  // Add local audio and attach the encrypting transform to its sender.
+  // Add local audio; attach the encrypting transform to its sender when E2EE is on.
   for (const track of localStream.getTracks()) {
     const sender = pc.addTrack(track, localStream);
-    sender.transform = new RTCRtpScriptTransform(e2eeWorker, {
-      operation: 'encrypt',
-      keyBytes,
-    });
+    if (E2EE_ON) {
+      sender.transform = new RTCRtpScriptTransform(e2eeWorker, { operation: 'encrypt', keyBytes });
+    }
   }
 
   pc.ontrack = (evt) => {
-    console.log('[webrtc] remote track received; attaching decrypt transform');
-    // Attach the decrypting transform to the receiver, then play the stream.
-    evt.receiver.transform = new RTCRtpScriptTransform(e2eeWorker, {
-      operation: 'decrypt',
-      keyBytes,
-    });
+    console.log('[webrtc] remote track received' + (E2EE_ON ? '; attaching decrypt transform' : ' (E2EE off)'));
+    if (E2EE_ON) {
+      evt.receiver.transform = new RTCRtpScriptTransform(e2eeWorker, { operation: 'decrypt', keyBytes });
+    }
     remoteAudio.srcObject = evt.streams[0];
     // Force playback — some browsers won't autoplay a remote stream on their own.
     remoteAudio.play().catch((err) => {
@@ -230,8 +247,8 @@ async function setupMediaAndPc() {
     const state = pc.connectionState;
     setCallStatus(undefined, state);
     if (state === 'connected') {
-      setCallStatus('Connected', 'end-to-end encrypted');
-      eeBadge.hidden = false;
+      setCallStatus('Connected', E2EE_ON ? 'end-to-end encrypted' : 'NOT encrypted (testing mode)');
+      eeBadge.hidden = !E2EE_ON;
       clearBanner();
     } else if (state === 'failed') {
       setCallStatus('Connection failed', 'failed');
@@ -267,11 +284,11 @@ function generateSecret() {
 // ---------------------------------------------------------------------------
 // Flows
 // ---------------------------------------------------------------------------
-function ensureE2eeSupported() {
-  if (!E2EE_SUPPORTED) {
+function ensureE2eeOk() {
+  if (e2eeRequested() && !E2EE_SUPPORTED) {
     showBanner(
-      'This browser does not support end-to-end encrypted calls. Please use a current ' +
-      'version of Chrome, Edge, Safari, or Firefox.',
+      'This browser does not support end-to-end encrypted calls. Use a current version of ' +
+      'Chrome, Edge, Safari, or Firefox — or append ?e2ee=off to the URL to test without it.',
       'error'
     );
     return false;
@@ -281,7 +298,7 @@ function ensureE2eeSupported() {
 
 async function handleCreate() {
   clearBanner();
-  if (!ensureE2eeSupported()) return;
+  if (!ensureE2eeOk()) return;
   role = 'creator';
   secret = generateSecret();
   try {
@@ -295,12 +312,12 @@ async function handleCreate() {
 
 async function handleJoin() {
   clearBanner();
-  if (!ensureE2eeSupported()) return;
+  if (!ensureE2eeOk()) return;
 
   const code = $('join-code').value.trim().toUpperCase();
   const pass = $('join-pass').value.trim();
   if (!code) { showBanner('Enter the room code.', 'error'); return; }
-  if (!pass) { showBanner('Enter the passphrase from the person who invited you.', 'error'); return; }
+  if (E2EE_ON && !pass) { showBanner('Enter the passphrase from the person who invited you.', 'error'); return; }
 
   role = 'joiner';
   secret = pass;
@@ -326,10 +343,12 @@ function reportSetupError(err) {
 }
 
 function showCreatedView() {
-  const link = `${location.origin}/?room=${roomId}#k=${secret}`;
-  $('share-link').value = link;
+  const base = `${location.origin}/?room=${roomId}`;
+  // With E2EE on, the key rides in the URL fragment (never sent to the server).
+  // With E2EE off, propagate the flag so the joiner uses the same setting.
+  $('share-link').value = E2EE_ON ? `${base}#k=${secret}` : `${base}&e2ee=off`;
   $('room-code').value = roomId;
-  $('passphrase-out').value = secret;
+  $('passphrase-out').value = E2EE_ON ? secret : '(encryption disabled — testing)';
   showView('created');
 }
 
@@ -412,19 +431,24 @@ function init() {
     btn.onclick = () => copyFrom(btn.getAttribute('data-copy'));
   });
 
-  // If opened via a share link (/?room=CODE#k=SECRET), prefill the join form.
+  // If opened via a share link (/?room=CODE[#k=SECRET]), prefill the join form.
   const params = new URLSearchParams(location.search);
   const roomParam = params.get('room');
   const keyFromHash = new URLSearchParams(location.hash.slice(1)).get('k');
 
   if (roomParam) {
     $('join-code').value = roomParam.toUpperCase();
-    if (keyFromHash) $('join-pass').value = keyFromHash;
+    if (E2EE_ON && keyFromHash) $('join-pass').value = keyFromHash;
     showView('join');
-    if (!E2EE_SUPPORTED) ensureE2eeSupported();
   } else {
     showView('home');
-    if (!E2EE_SUPPORTED) ensureE2eeSupported();
+  }
+  ensureE2eeOk(); // warn early if E2EE is requested but the browser can't do it
+
+  // Make it obvious when running unencrypted.
+  if (!e2eeRequested()) {
+    const sub = document.querySelector('.app__subtitle');
+    if (sub) sub.textContent = 'Peer-to-peer voice — ENCRYPTION OFF (testing mode).';
   }
 
   // The key lives only in this tab; strip it from the visible URL / history.
