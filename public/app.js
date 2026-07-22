@@ -177,9 +177,17 @@ async function setupMediaAndPc() {
   keyBytes = await deriveKeyBytes(secret);
   e2eeWorker = new Worker('e2ee-worker.js');
   e2eeWorker.onmessage = (e) => {
-    if (e.data && e.data.type === 'decrypt-error') {
+    const data = e.data || {};
+    if (data.type === 'log') {
+      console.log('[e2ee]', data.msg);
+    } else if (data.type === 'decrypt-error') {
+      console.warn('[e2ee] decryption failed — the passphrase does not match the other peer.');
       showBanner('Incoming audio could not be decrypted — the passphrase may not match.', 'error');
     }
+  };
+  e2eeWorker.onerror = (e) => {
+    console.error('[e2ee] worker error:', e.message);
+    showBanner('Encryption worker failed to start: ' + e.message, 'error');
   };
 
   localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -196,12 +204,20 @@ async function setupMediaAndPc() {
   }
 
   pc.ontrack = (evt) => {
+    console.log('[webrtc] remote track received; attaching decrypt transform');
     // Attach the decrypting transform to the receiver, then play the stream.
     evt.receiver.transform = new RTCRtpScriptTransform(e2eeWorker, {
       operation: 'decrypt',
       keyBytes,
     });
     remoteAudio.srcObject = evt.streams[0];
+    // Force playback — some browsers won't autoplay a remote stream on their own.
+    remoteAudio.play().catch((err) => {
+      console.warn('[audio] autoplay blocked:', err && err.message);
+      showBanner('Tap anywhere to start audio.', 'info');
+      const resume = () => { remoteAudio.play().catch(() => {}); document.removeEventListener('click', resume); };
+      document.addEventListener('click', resume);
+    });
   };
 
   pc.onicecandidate = (evt) => {
