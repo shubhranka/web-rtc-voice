@@ -4,11 +4,25 @@
 // Config
 // ---------------------------------------------------------------------------
 const ICE_SERVERS = [
+  // STUN lets peers discover their public address for a DIRECT connection.
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  // For peers behind restrictive/symmetric NATs, STUN alone is not enough.
-  // Add a TURN server here (the relay still only sees E2EE ciphertext):
-  // { urls: 'turn:YOUR_TURN_HOST:3478', username: 'user', credential: 'pass' },
+
+  // TURN relays media when a direct path is impossible (symmetric/strict NAT,
+  // mobile data, locked-down networks). Without it, such peers will connect
+  // signaling but get no audio. The relay only ever sees E2EE ciphertext.
+  //
+  // Get free TURN credentials (e.g. metered.ca free tier, or Twilio), or
+  // self-host coturn, then uncomment and fill in:
+  // {
+  //   urls: [
+  //     'turn:YOUR_TURN_HOST:3478?transport=udp',
+  //     'turn:YOUR_TURN_HOST:3478?transport=tcp',
+  //     'turns:YOUR_TURN_HOST:5349?transport=tcp',
+  //   ],
+  //   username: 'YOUR_USERNAME',
+  //   credential: 'YOUR_CREDENTIAL',
+  // },
 ];
 
 // PBKDF2 parameters — must match on both peers (they do, since it's the same code).
@@ -239,9 +253,18 @@ async function setupMediaAndPc() {
 
   pc.onicecandidate = (evt) => {
     if (evt.candidate) {
+      const c = evt.candidate;
+      // type is host | srflx (via STUN) | relay (via TURN). Seeing 'srflx'
+      // proves STUN is reachable; needing 'relay' means TURN is required.
+      console.log(`[ice] local candidate: ${c.type || '?'} ${c.protocol || ''} ${c.address || ''}`);
       sendWs({ type: 'signal', payload: { candidate: evt.candidate } });
+    } else {
+      console.log('[ice] local candidate gathering complete');
     }
   };
+
+  pc.oniceconnectionstatechange = () => console.log('[ice] iceConnectionState:', pc.iceConnectionState);
+  pc.onicegatheringstatechange = () => console.log('[ice] iceGatheringState:', pc.iceGatheringState);
 
   pc.onconnectionstatechange = () => {
     const state = pc.connectionState;
