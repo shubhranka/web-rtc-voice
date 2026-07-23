@@ -5,9 +5,8 @@
 //   2. Act as a WebSocket signaling relay so two browsers can find each other
 //      and exchange WebRTC offer/answer/ICE by room code.
 //
-// The server never sees the audio (that flows peer-to-peer) and never sees the
-// end-to-end encryption key (that travels in the URL fragment, which browsers
-// never send to a server). It only relays opaque signaling messages.
+// The server never sees the audio (that flows peer-to-peer). It only relays
+// opaque signaling messages between the two peers in a room.
 
 import express from 'express';
 import http from 'http';
@@ -22,7 +21,7 @@ const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Single-page style: any unknown GET falls back to index.html so that a
-// shared link like /?room=ABC123#k=... still loads the app.
+// shared link like /?room=ABC123 still loads the app.
 app.get('*', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });

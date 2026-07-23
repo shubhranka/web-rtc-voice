@@ -124,19 +124,6 @@ body {
 .copy-row { display: flex; gap: 8px; }
 .copy-row .input { flex: 1; }
 
-.split { display: flex; gap: 16px; flex-wrap: wrap; }
-.split__col { flex: 1; min-width: 180px; }
-
-.hint {
-  font-size: 0.85rem;
-  color: var(--muted);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px 14px;
-  margin: 20px 0;
-}
-
 /* Banner */
 .banner {
   padding: 12px 16px;
@@ -174,18 +161,5 @@ body {
   animation: spin 0.9s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-
-/* Footer / E2EE badge */
-.app__footer { text-align: center; margin-top: 24px; min-height: 22px; }
-.ee-badge {
-  display: inline-block;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  padding: 4px 12px;
-}
-.ee-badge::before { content: "🔒 "; }
 
 #remote-audio { display: none; }

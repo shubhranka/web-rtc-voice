@@ -10,10 +10,8 @@ const ICE_SERVERS = [
 
   // TURN relays media when a direct path is impossible (symmetric/strict NAT,
   // mobile data, locked-down networks). Without it, such peers will connect
-  // signaling but get no audio. The relay only ever sees E2EE ciphertext.
-  //
-  // Get free TURN credentials (e.g. metered.ca free tier, or Twilio), or
-  // self-host coturn, then uncomment and fill in:
+  // signaling but get no audio. Get free TURN credentials (e.g. metered.ca or
+  // Twilio) or self-host coturn, then uncomment and fill in:
   // {
   //   urls: [
   //     'turn:YOUR_TURN_HOST:3478?transport=udp',
@@ -24,29 +22,6 @@ const ICE_SERVERS = [
   //   credential: 'YOUR_CREDENTIAL',
   // },
 ];
-
-// PBKDF2 parameters — must match on both peers (they do, since it's the same code).
-const KDF_SALT = 'voice-chat-e2ee-v1';
-const KDF_ITERATIONS = 100000;
-
-// App-layer E2EE requires the Insertable Streams transform API.
-const E2EE_SUPPORTED = typeof window.RTCRtpScriptTransform === 'function';
-
-// --- End-to-end encryption toggle -----------------------------------------
-// Default ON. Override per session with ?e2ee=off in the URL (handy for
-// isolating audio issues without a redeploy). BOTH peers must use the same
-// setting — the creator's share link carries it to the joiner automatically.
-const E2EE_DEFAULT = true;
-
-function e2eeRequested() {
-  const q = new URLSearchParams(location.search).get('e2ee');
-  if (q === 'off' || q === 'false' || q === '0') return false;
-  if (q === 'on' || q === 'true' || q === '1') return true;
-  return E2EE_DEFAULT;
-}
-
-// Effective setting for this session.
-const E2EE_ON = e2eeRequested() && E2EE_SUPPORTED;
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -61,7 +36,6 @@ const views = {
 };
 const banner = $('banner');
 const remoteAudio = $('remote-audio');
-const eeBadge = $('ee-badge');
 
 // ---------------------------------------------------------------------------
 // State
@@ -69,11 +43,8 @@ const eeBadge = $('ee-badge');
 let ws = null;
 let pc = null;
 let localStream = null;
-let e2eeWorker = null;
-let keyBytes = null;
 let role = null; // 'creator' | 'joiner'
 let roomId = null;
-let secret = null;
 let muted = false;
 const pendingCandidates = [];
 
@@ -202,45 +173,18 @@ async function makeOffer() {
   sendWs({ type: 'signal', payload: { description: pc.localDescription } });
 }
 
-// Build the peer connection, grab the mic, and (when enabled) wire up E2EE.
+// Build the peer connection and grab the mic.
 async function setupMediaAndPc() {
-  if (E2EE_ON) {
-    keyBytes = await deriveKeyBytes(secret);
-    e2eeWorker = new Worker('e2ee-worker.js');
-    e2eeWorker.onmessage = (e) => {
-      const data = e.data || {};
-      if (data.type === 'log') {
-        console.log('[e2ee]', data.msg);
-      } else if (data.type === 'decrypt-error') {
-        console.warn('[e2ee] decryption failed — the passphrase does not match the other peer.');
-        showBanner('Incoming audio could not be decrypted — the passphrase may not match.', 'error');
-      }
-    };
-    e2eeWorker.onerror = (e) => {
-      console.error('[e2ee] worker error:', e.message);
-      showBanner('Encryption worker failed to start: ' + e.message, 'error');
-    };
-  } else {
-    console.warn('[e2ee] DISABLED for this session (testing mode). Audio is NOT end-to-end encrypted.');
-  }
-
   localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
 
   pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
-  // Add local audio; attach the encrypting transform to its sender when E2EE is on.
   for (const track of localStream.getTracks()) {
-    const sender = pc.addTrack(track, localStream);
-    if (E2EE_ON) {
-      sender.transform = new RTCRtpScriptTransform(e2eeWorker, { operation: 'encrypt', keyBytes });
-    }
+    pc.addTrack(track, localStream);
   }
 
   pc.ontrack = (evt) => {
-    console.log('[webrtc] remote track received' + (E2EE_ON ? '; attaching decrypt transform' : ' (E2EE off)'));
-    if (E2EE_ON) {
-      evt.receiver.transform = new RTCRtpScriptTransform(e2eeWorker, { operation: 'decrypt', keyBytes });
-    }
+    console.log('[webrtc] remote track received');
     remoteAudio.srcObject = evt.streams[0];
     // Force playback — some browsers won't autoplay a remote stream on their own.
     remoteAudio.play().catch((err) => {
@@ -254,8 +198,7 @@ async function setupMediaAndPc() {
   pc.onicecandidate = (evt) => {
     if (evt.candidate) {
       const c = evt.candidate;
-      // type is host | srflx (via STUN) | relay (via TURN). Seeing 'srflx'
-      // proves STUN is reachable; needing 'relay' means TURN is required.
+      // type is host | srflx (via STUN) | relay (via TURN).
       console.log(`[ice] local candidate: ${c.type || '?'} ${c.protocol || ''} ${c.address || ''}`);
       sendWs({ type: 'signal', payload: { candidate: evt.candidate } });
     } else {
@@ -270,8 +213,7 @@ async function setupMediaAndPc() {
     const state = pc.connectionState;
     setCallStatus(undefined, state);
     if (state === 'connected') {
-      setCallStatus('Connected', E2EE_ON ? 'end-to-end encrypted' : 'NOT encrypted (testing mode)');
-      eeBadge.hidden = !E2EE_ON;
+      setCallStatus('Connected', 'call in progress');
       clearBanner();
     } else if (state === 'failed') {
       setCallStatus('Connection failed', 'failed');
@@ -283,47 +225,11 @@ async function setupMediaAndPc() {
 }
 
 // ---------------------------------------------------------------------------
-// E2EE key derivation
-// ---------------------------------------------------------------------------
-async function deriveKeyBytes(sharedSecret) {
-  const enc = new TextEncoder();
-  const baseKey = await crypto.subtle.importKey(
-    'raw', enc.encode(sharedSecret), 'PBKDF2', false, ['deriveBits']
-  );
-  return crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt: enc.encode(KDF_SALT), iterations: KDF_ITERATIONS, hash: 'SHA-256' },
-    baseKey,
-    256
-  );
-}
-
-function generateSecret() {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  // URL-safe base64 without padding.
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-// ---------------------------------------------------------------------------
 // Flows
 // ---------------------------------------------------------------------------
-function ensureE2eeOk() {
-  if (e2eeRequested() && !E2EE_SUPPORTED) {
-    showBanner(
-      'This browser does not support end-to-end encrypted calls. Use a current version of ' +
-      'Chrome, Edge, Safari, or Firefox — or append ?e2ee=off to the URL to test without it.',
-      'error'
-    );
-    return false;
-  }
-  return true;
-}
-
 async function handleCreate() {
   clearBanner();
-  if (!ensureE2eeOk()) return;
   role = 'creator';
-  secret = generateSecret();
   try {
     await setupMediaAndPc();
     await connectSignaling();
@@ -335,15 +241,10 @@ async function handleCreate() {
 
 async function handleJoin() {
   clearBanner();
-  if (!ensureE2eeOk()) return;
-
   const code = $('join-code').value.trim().toUpperCase();
-  const pass = $('join-pass').value.trim();
   if (!code) { showBanner('Enter the room code.', 'error'); return; }
-  if (E2EE_ON && !pass) { showBanner('Enter the passphrase from the person who invited you.', 'error'); return; }
 
   role = 'joiner';
-  secret = pass;
   try {
     await setupMediaAndPc();
     await connectSignaling();
@@ -366,12 +267,8 @@ function reportSetupError(err) {
 }
 
 function showCreatedView() {
-  const base = `${location.origin}/?room=${roomId}`;
-  // With E2EE on, the key rides in the URL fragment (never sent to the server).
-  // With E2EE off, propagate the flag so the joiner uses the same setting.
-  $('share-link').value = E2EE_ON ? `${base}#k=${secret}` : `${base}&e2ee=off`;
+  $('share-link').value = `${location.origin}/?room=${roomId}`;
   $('room-code').value = roomId;
-  $('passphrase-out').value = E2EE_ON ? secret : '(encryption disabled — testing)';
   showView('created');
 }
 
@@ -394,6 +291,8 @@ function cleanupMedia() {
     pc.ontrack = null;
     pc.onicecandidate = null;
     pc.onconnectionstatechange = null;
+    pc.oniceconnectionstatechange = null;
+    pc.onicegatheringstatechange = null;
     try { pc.close(); } catch { /* ignore */ }
     pc = null;
   }
@@ -401,17 +300,11 @@ function cleanupMedia() {
     localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
   }
-  if (e2eeWorker) {
-    e2eeWorker.terminate();
-    e2eeWorker = null;
-  }
   remoteAudio.srcObject = null;
-  keyBytes = null;
   pendingCandidates.length = 0;
   muted = false;
   $('btn-mute').textContent = 'Mute';
   $('btn-mute').classList.remove('btn--muted');
-  eeBadge.hidden = true;
 }
 
 function hangUp(notify = true) {
@@ -423,7 +316,6 @@ function hangUp(notify = true) {
     ws = null;
   }
   roomId = null;
-  secret = null;
   role = null;
   setCallStatus('Connecting…', 'setting up…');
   showView('home');
@@ -454,29 +346,13 @@ function init() {
     btn.onclick = () => copyFrom(btn.getAttribute('data-copy'));
   });
 
-  // If opened via a share link (/?room=CODE[#k=SECRET]), prefill the join form.
-  const params = new URLSearchParams(location.search);
-  const roomParam = params.get('room');
-  const keyFromHash = new URLSearchParams(location.hash.slice(1)).get('k');
-
+  // If opened via a share link (/?room=CODE), prefill the join form.
+  const roomParam = new URLSearchParams(location.search).get('room');
   if (roomParam) {
     $('join-code').value = roomParam.toUpperCase();
-    if (E2EE_ON && keyFromHash) $('join-pass').value = keyFromHash;
     showView('join');
   } else {
     showView('home');
-  }
-  ensureE2eeOk(); // warn early if E2EE is requested but the browser can't do it
-
-  // Make it obvious when running unencrypted.
-  if (!e2eeRequested()) {
-    const sub = document.querySelector('.app__subtitle');
-    if (sub) sub.textContent = 'Peer-to-peer voice — ENCRYPTION OFF (testing mode).';
-  }
-
-  // The key lives only in this tab; strip it from the visible URL / history.
-  if (location.hash) {
-    history.replaceState(null, '', location.pathname + location.search);
   }
 }
 
