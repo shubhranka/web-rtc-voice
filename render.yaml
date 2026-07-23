@@ -1,0 +1,14 @@
+# Render Blueprint — deploys this app as a single Node web service.
+# In Render: New + → Blueprint → pick this repo, and it reads this file.
+# (Or skip it and configure the service manually in the dashboard.)
+services:
+  - type: web
+    name: encrypted-voice-chat
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "20"

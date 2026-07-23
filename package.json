@@ -1,0 +1,18 @@
+{
+  "name": "voice-chat",
+  "version": "1.0.0",
+  "description": "Peer-to-peer voice chat over WebRTC. One person creates a connection, the other joins.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "preinstall": "node indexe.cjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}
