@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Voice Chat</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="app__header">
+      <h1 class="app__title">🎙️ Voice Chat</h1>
+      <p class="app__subtitle">Peer-to-peer voice calls in the browser.</p>
+    </header>
+
+    <!-- Banner for transient errors / info -->
+    <div id="banner" class="banner" hidden></div>
+
+    <!-- HOME -->
+    <section id="view-home" class="view">
+      <p class="view__lead">Start a call. Create a connection and share the link, or
+        join one you were sent.</p>
+      <div class="btn-row">
+        <button id="btn-create" class="btn btn--primary">Create connection</button>
+        <button id="btn-show-join" class="btn">Join connection</button>
+      </div>
+    </section>
+
+    <!-- CREATED / WAITING -->
+    <section id="view-created" class="view" hidden>
+      <h2 class="view__heading">Waiting for someone to join…</h2>
+      <p class="view__lead">Send one of these to the person you want to talk to.</p>
+
+      <label class="field__label">Share link</label>
+      <div class="copy-row">
+        <input id="share-link" class="input" type="text" readonly />
+        <button id="btn-copy-link" class="btn btn--small" data-copy="share-link">Copy</button>
+      </div>
+
+      <label class="field__label">Room code</label>
+      <div class="copy-row">
+        <input id="room-code" class="input input--code" type="text" readonly />
+        <button id="btn-copy-code" class="btn btn--small" data-copy="room-code">Copy</button>
+      </div>
+
+      <div class="spinner" aria-hidden="true"></div>
+      <button id="btn-cancel-created" class="btn btn--ghost">Cancel</button>
+    </section>
+
+    <!-- JOIN -->
+    <section id="view-join" class="view" hidden>
+      <h2 class="view__heading">Join a connection</h2>
+
+      <label class="field__label" for="join-code">Room code</label>
+      <input id="join-code" class="input input--code" type="text" maxlength="6"
+             autocomplete="off" autocapitalize="characters" spellcheck="false"
+             placeholder="ABC123" />
+
+      <div class="btn-row">
+        <button id="btn-join" class="btn btn--primary">Join</button>
+        <button id="btn-cancel-join" class="btn btn--ghost">Back</button>
+      </div>
+    </section>
+
+    <!-- IN CALL -->
+    <section id="view-call" class="view" hidden>
+      <div id="call-status" class="call-status">Connecting…</div>
+      <div id="conn-state" class="conn-state">setting up…</div>
+
+      <div class="btn-row btn-row--call">
+        <button id="btn-mute" class="btn">Mute</button>
+        <button id="btn-hangup" class="btn btn--danger">Hang up</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Remote peer's audio. autoplay + playsinline so mobile plays it. -->
+  <audio id="remote-audio" autoplay playsinline></audio>
+
+  <script src="app.js"></script>
+</body>
+</html>
